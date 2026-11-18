@@ -56,6 +56,18 @@ run = """
 hk check --all
 """
 
+[tasks.crds-i]
+description = "Install Kubernetes Gateway API Standard CRDs"
+run = """
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.1/standard-install.yaml
+"""
+
+[tasks.crds-u]
+description = "Uninstall Kubernetes Gateway API Standard CRDs"
+run = """
+kubectl delete -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.1/standard-install.yaml --ignore-not-found
+"""
+
 [tasks.helm-l]
 description = "Lint Helm chart"
 depends = ["helm-d"]
@@ -71,14 +83,14 @@ helm template test chart/ > rendered.yaml
 """
 
 [tasks.helm-i]
-description = "Install Helm chart"
+description = "Install Helm chart (test release for local dev/testing)"
 depends = ["helm-d"]
 run = """
 helm install test chart/
 """
 
 [tasks.helm-u]
-description = "Uninstall Helm chart"
+description = "Uninstall Helm chart (test release for local dev/testing)"
 run = """
 helm uninstall test
 """
