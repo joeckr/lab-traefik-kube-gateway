@@ -1,24 +1,29 @@
-# skeleton-lab-service
+# lab-traefik-kube-gateway
 
-A starter skeleton repository tailored for rapid experimentation, prototyping, and testing of services in a lab environment (local container runtimes and Kubernetes).
+A Helm wrapper chart repository tailored for deploying a hardened, rootless Traefik Kubernetes Gateway API Controller (`traefik`) to Kubernetes clusters (such as Talos Linux) enforcing Pod Security Standards (`restricted` profile).
 
-> **Note**: This repository intentionally **does NOT include a Dockerfile**. If a custom image build is required, use an OCI image repository (such as `skeleton-oci-modified`). Lab repositories focus on configuring, deploying, and testing upstream or pre-built container services.
+> **Note**: This repository is an umbrella/wrapper Helm chart wrapping the official upstream [`traefik`](https://traefik.github.io/charts) chart. It provides pre-configured, production-hardened defaults for clusters that enforce rootless execution across all namespaces, using the modern Kubernetes Gateway API (`gateway.networking.k8s.io/v1`).
 
 ---
 
 ## Features
 
-- **Helm Chart (`chart/`)**:
-  - Out-of-the-box support for deploying services to Kubernetes.
-  - Parameterized upstream container image (`image:tag`), replica count, and ports.
-  - Standard Kubernetes Ingress support (`networking.k8s.io/v1`).
-  - Secure defaults: non-root execution (`runAsNonRoot: true`), `RuntimeDefault` seccomp profile, and dropping `ALL` capabilities.
-  - Master and control-plane node tolerations for compact lab clusters.
+- **Helm Wrapper Chart (`chart/`)**:
+  - Overrides and configures the official upstream `traefik` chart (version `42.0.0`, Traefik `v3.7.14`).
+  - **Rootless & Hardened by Default**: Strictly compliant with the Kubernetes **Pod Security Admission (PSA) `restricted` profile**.
+  - **Zero Elevated Capabilities**: Runs completely unprivileged by dropping `ALL` capabilities (`capabilities.drop: ["ALL"]`) with *zero* added capabilities. Binds to unprivileged container ports `8000` (`web`) and `8443` (`websecure`).
+  - **Read-Only Root Filesystem**: Enforces `readOnlyRootFilesystem: true` with ephemeral `emptyDir` volumes mounted for `/tmp` and `/data`.
+  - **No Host Networking**: Sets `hostNetwork: false`, preventing host namespace access and ensuring strict network isolation.
+  - **Unprivileged User Execution**: Runs under non-root UID `65532` (`nonroot`), GID `65532`, and `fsGroup: 65532`.
+  - **Service-Based Traffic Exposure**: Configured with a `LoadBalancer` service mapping external ports `80 -> 8000` and `443 -> 8443` without requiring host port mapping.
+  - **DaemonSet Architecture**: Deploys as a `DaemonSet` with control-plane and master node tolerations for compact lab and bare-metal environments.
+  - **Pure Kubernetes Gateway API Provider**: Dedicated exclusively to the Kubernetes Gateway API (`gateway.networking.k8s.io/v1`) with legacy `Ingress`, `IngressClass`, and `kubernetesCRD` providers disabled.
+  - **Pre-provisioned GatewayClass & Gateway**: Automatically deploys the `traefik` `GatewayClass` (`traefik.io/gateway-controller`) and `traefik-gateway` `Gateway` configured to accept `HTTPRoute` attachments from `All` namespaces on the `web` (`8000`) listener, while syncing LoadBalancer status addresses.
 - **Compose (`compose.yml`)**:
-  - Spin up and test the lab service locally in seconds without requiring a cluster.
-  - Pre-configured with port forwarding, and healthchecks.
+  - Spin up and test Traefik locally with Podman Compose without needing a cluster.
+  - Pre-configured entrypoints, dashboard access, and healthcheck.
 - **Environment & Tooling (`mise` & `hk`)**:
-  - `mise.toml`: Tool version management (`helm`, `betterleaks`, `addlicense`, `trivy`, `actionlint`, `shellcheck`, `zizmor`, `hk`, `pkl`, `tombi`, `yamllint`) and convenient task aliases.
+  - `mise.toml`: Tool version management (`helm`, `betterleaks`, `addlicense`, `trivy`, `actionlint`, `shellcheck`, `zizmor`, `hk`, `pkl`, `tombi`, `yamllint`) and task aliases.
   - `hk.pkl`: Fast git hooks and project checks enforcing Conventional Commits, branch protection, secret scanning (`betterleaks`), Helm linting, workflow linting (`actionlint`), security audits (`zizmor`), YAML linting (`yamllint`), TOML linting (`tombi`), shell checking (`shellcheck`), and license checks (`addlicense`).
 - **GitHub Actions CI (`.github/workflows/`)**:
   - Reusable workflows powered by [`joeckr/ci-templates`](https://github.com/joeckr/ci-templates):
@@ -40,15 +45,12 @@ A starter skeleton repository tailored for rapid experimentation, prototyping, a
 │       ├── release.yml          # Semantic release and Helm chart publishing to GHCR
 │       └── test_release.yml     # PR dry-run test for releases and chart packaging
 ├── chart/
-│   ├── Chart.yaml               # Helm chart definition
-│   ├── values.yaml              # Default configuration values
+│   ├── Chart.yaml               # Wrapper chart definition with traefik dependency
+│   ├── Chart.lock               # Pinned dependency lockfile
+│   ├── values.yaml              # Hardened rootless Gateway API configuration overrides
 │   ├── .helmignore              # Ignore rules for chart packaging
 │   └── templates/
-│       ├── deployment.yaml      # Workload deployment
-│       ├── service.yaml         # Kubernetes Service
-│       └── ingress.yaml         # Kubernetes Ingress
-├── scripts/
-│   └── template.sh              # Helper script placeholder
+│       └── .gitkeep             # Wrapper chart templates placeholder
 ├── compose.yml                  # Local lab service definition
 ├── hk.pkl                       # hk git hooks and checks configuration
 ├── mise.toml                    # Mise tools and tasks
@@ -57,218 +59,152 @@ A starter skeleton repository tailored for rapid experimentation, prototyping, a
 
 ---
 
-## Security & Hardened Image Architecture
+## Security & Hardened Architecture
 
-Modern hardened Kubernetes environments prioritize workload security and least privilege by enforcing strict runtime constraints. This repository is architected to produce rootless, hardened container images that run out-of-the-box under restricted security standards without requiring root privileges.
+Modern hardened Kubernetes environments (such as Talos Linux or clusters with Pod Security Admission enabled) enforce least privilege and namespace isolation. This wrapper chart is specifically tailored to meet the Kubernetes **Pod Security Standards (PSS) `restricted` profile**.
 
 ### Hardened Container Standards (Kubernetes PSS `restricted`)
 
-Under the Kubernetes **Pod Security Admission (PSA)** `restricted` profile and modern hardened container runtimes:
-- **Must Run As Non-Root**: The pod specification sets `securityContext.runAsNonRoot: true` with a dedicated non-root UID (`USER 1031` or dynamic non-root UID). Containers cannot execute as UID 0.
-- **Arbitrary Dynamic UIDs**: Workload environments may assign dynamic arbitrary non-root UIDs. Files and directories required at runtime are configured with group 0 permissions (`chgrp -R 0` and `chmod -R g+rwX`) so any non-root UID can execute and access required assets.
-- **Drop All Capabilities**: The container specification explicitly drops all Linux capabilities (`capabilities.drop: ["ALL"]`).
-- **Disallow Privilege Escalation**: Pods enforce `securityContext.allowPrivilegeEscalation: false` to prevent child processes from acquiring additional privileges.
+Under the Kubernetes **Pod Security Admission (PSA)** `restricted` profile:
+
+- **Must Run As Non-Root**: Pod specification sets `runAsNonRoot: true` with non-root UID `65532` and GID `65532`. Containers cannot execute as UID 0.
+- **No Host Namespaces (`hostNetwork: false`)**: Traefik runs inside its own isolated network namespace, preventing unauthorized access to the host network stack.
+- **Drop All Capabilities**: Traefik runs on unprivileged container ports (`8000`, `8443`, `8080`, `9100`) and explicitly drops all capabilities (`capabilities.drop: ["ALL"]`). Unlike controllers binding directly to ports `< 1024`, Traefik does not require `NET_BIND_SERVICE` or file capabilities, preventing `EPERM` kernel execution rejections under `allowPrivilegeEscalation: false`.
+- **Read-Only Root Filesystem**: The container runs with `readOnlyRootFilesystem: true`, mounting ephemeral `emptyDir` volumes at `/tmp` and `/data` to prevent runtime tampering with container binaries or configuration files.
+- **Disallow Privilege Escalation**: Pods enforce `allowPrivilegeEscalation: false` to prevent child processes from acquiring additional privileges.
 - **RuntimeDefault Seccomp**: Workloads enforce `seccompProfile: { type: RuntimeDefault }` to restrict syscalls to safe defaults.
-- **Credential Protection**: Hardened with `automountServiceAccountToken: false` to avoid leaking Kubernetes API tokens to application containers unless explicitly needed.
-- **Unprivileged Ports**: Containers listen on non-privileged ports (> 1024).
-- **Standard Ingress & Storage**: Uses standard Kubernetes `networking.k8s.io/v1` `Ingress` and standard CSI PersistentVolumeClaims.
+- **Group Isolation**: Configured with `fsGroup: 65532` matching the controller's runtime group.
 
 ### Compliance Matrix
 
 | Security Dimension | Restricted Standard Requirement | Implementation in This Repo |
 |---|---|---|
-| **Workload Execution** | Non-root UID (`runAsNonRoot: true`) | Unprivileged container image (`nginx-unprivileged`) + `runAsNonRoot: true` |
-| **Group Permissions** | GID 0 (`root` group) with `g+rwX` | Configured for arbitrary UIDs and group 0 compatibility |
-| **Capabilities** | Must drop `ALL` capabilities | `capabilities.drop: ["ALL"]` in Helm chart |
-| **Privilege Escalation** | Prohibited (`allowPrivilegeEscalation: false`) | Configured in Helm `securityContext` |
+| **Workload Execution** | Non-root UID (`runAsNonRoot: true`) | UID `65532` (`nonroot`), GID `65532`, `runAsNonRoot: true` |
+| **Group Permissions** | Non-root GID / `fsGroup` | `fsGroup: 65532` |
+| **Host Namespaces** | Forbidden (`hostNetwork: false`) | `hostNetwork: false` |
+| **Capabilities** | Must drop `ALL` capabilities | `capabilities.drop: ["ALL"]` (no elevated capabilities required) |
+| **Privilege Escalation** | Prohibited (`allowPrivilegeEscalation: false`) | `allowPrivilegeEscalation: false` |
+| **Root Filesystem** | Read-only root filesystem recommended | `readOnlyRootFilesystem: true` with ephemeral `emptyDir` for `/tmp` and `/data` |
+| **Port Binding** | Unprivileged (> 1024) | Listens on container ports `8000` (web), `8443` (websecure), `8080` (internal/ping), `9100` (metrics) |
 | **Seccomp Profile** | `RuntimeDefault` or `Localhost` | `seccompProfile: { type: RuntimeDefault }` |
-| **Service Account Token** | Disabled unless required | `automountServiceAccountToken: false` in pod spec |
-| **Port Binding** | Unprivileged (> 1024) | Listens on port `8080` |
-| **Ingress Layer** | Standard Kubernetes Ingress | Kubernetes Ingress (`networking.k8s.io/v1`) |
----
-
-## Local Environment & Podman Setup
-
-To ensure containerized applications and Helm charts tested locally run cleanly when deployed to hardened Kubernetes environments, this repository is designed to be used alongside the Podman configuration in [joeckr/dotfiles](https://github.com/joeckr/dotfiles).
-
-The dotfiles repository provides a centralized [`containers.conf`](https://github.com/joeckr/dotfiles/blob/main/containers/containers.conf) (deployed to `~/.config/containers/containers.conf`) that configures Podman to enforce rootless and hardened container runtime restrictions in testing:
-
-| Security Rule | Podman Configuration | Description |
-|---|---|---|
-| **Random UID (`MustRunAsRange`)** | `userns = "auto"` | Allocates dynamic subordinate UID/GID ranges from `/etc/subuid` and `/etc/subgid`. Containers run unprivileged without mapping host root. |
-| **Drop Capabilities** | `default_capabilities = ["NET_BIND_SERVICE"]` | Drops standard root capabilities (`CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETUID`, `SETGID`, `SYS_CHROOT`, etc.) and permits only `NET_BIND_SERVICE`. |
-| **Disallow Privileged** | `privileged = false` | Disallows privileged container execution by default. |
-| **Seccomp Profile** | `seccomp_profile = "/usr/share/containers/seccomp.json"` | Enforces the runtime default seccomp profile (`RuntimeDefault`). |
-| **Namespace Isolation** | `cgroupns`, `ipcns`, `pidns`, `utsns = "private"` | Enforces private container namespaces (host namespaces are forbidden in restricted profiles). |
-
-### macOS Podman Machine Integration
-
-On macOS, the dotfiles installer script (`brew/podman.sh`) automates the machine lifecycle:
-
-1. Deploys `containers/containers.conf` to `~/.config/containers/containers.conf` on the host.
-2. Initializing `podman machine init` automatically mounts `~/.config/containers` into `/etc/containers` inside the Fedora CoreOS VM.
-3. Automatically symlinks `/etc/containers/containers.conf` to the VM user's config (`~core/.config/containers/containers.conf`) and restarts the Podman API service so all container executions immediately enforce these constraints.
+| **Service Account Token** | Scoped API access | Managed via upstream chart ClusterRole RBAC & ServiceAccount |
+| **Routing Layer** | Kubernetes Gateway API | `gateway.networking.k8s.io/v1` (`GatewayClass`, `Gateway`, `HTTPRoute`) |
+| **Traffic Exposure** | Standard Kubernetes Service | `type: LoadBalancer` exposing external ports `80` and `443` |
 
 ---
 
-## Testing & Validation Process
+## Testing & Deployment Process
 
-This repository defines a 3-tier testing process to validate container security, manifest generation, and runtime compatibility from local development through to production cluster deployment.
+### 1. Prerequisite: Install Gateway API CRDs
 
-```
-┌─────────────────────────┐     ┌─────────────────────────┐     ┌─────────────────────────┐
-│ Tier 1: Local Container │ ──> │ Tier 2: Podman Play     │ ──> │ Tier 3: K8s Cluster     │
-│ Fast local prototyping  │     │ Validate K8s manifests  │     │ Live Helm verification  │
-│ (compose.yml)           │     │ (podman play kube)      │     │ (helm install)          │
-└─────────────────────────┘     └─────────────────────────┘     └─────────────────────────┘
-```
+Because upstream Traefik charts (`>= v38.x`) do not bundle Kubernetes Gateway API CRDs, install the official Standard channel Gateway API CRDs into your cluster before deploying the chart.
 
-### Tier 1: Local Container Validation (`compose.yml`)
+> [!NOTE]
+> **CRDs are cluster-scoped**: CustomResourceDefinitions (`apiextensions.k8s.io/v1`) and `GatewayClass` resources are cluster-wide and **do not** belong to a specific namespace (you do not need `-n <namespace>` when applying them). However, the instantiated `Gateway`, `DaemonSet`, and `Service` created by the Helm chart—as well as any `HTTPRoute` resources created by your workloads—**are** namespaced. Because this chart configures `namespacePolicy.from: All` on the `Gateway` listener, `HTTPRoute` resources in any namespace can attach to the `traefik-gateway` in the release namespace.
 
-The [`compose.yml`](compose.yml) configuration runs the service container locally using Podman Compose:
+```bash
+mise run crds-i
+# or: kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.1/standard-install.yaml
 
-```sh
-# Start container in detached mode
-mise run compose
-# or: podman compose up -d
-
-# View container logs
-mise run logs
-# or: podman compose logs -f
-
-# Verify connectivity
-curl http://localhost:8080
-
-# Stop container
-mise run down
-# or: podman compose down
+# Verify the cluster-scoped CRDs are established
+kubectl get crd | grep gateway.networking.k8s.io
 ```
 
-**What this verifies:**
-- Unprivileged user execution without host root privileges.
-- Unprivileged port binding on port `8080`.
-- Health check verification and local volume mount handling.
+### 2. Build Chart Dependencies
 
----
+Before linting or rendering, download the upstream `traefik` dependency tarball:
 
-### Tier 2: Local Kubernetes Manifest Testing (`mise run play`)
-
-Before deploying to an actual Kubernetes cluster, you can test the rendered Kubernetes manifests locally using Podman's built-in `play kube` feature.
-
-```sh
-# Render templates and play Kubernetes manifests locally
-mise run play
-
-# Teardown the played pod and resources
-mise run play-d
+```bash
+mise run helm-d
+# or: helm dependency build chart/
 ```
 
-**How `mise run play` works:**
-1. Triggers the dependent task `mise run helm-t`, which executes:
-   ```sh
-   helm dependency build chart/
-   helm template test chart/ > rendered.yaml
-   ```
-2. Executes `podman play kube rendered.yaml --publish-all`, which:
-   - Reads the multi-document Kubernetes YAML (`Deployment`, `Service`).
-   - Creates a local Podman pod matching the Kubernetes `Deployment` specification.
-   - Applies the pod's `securityContext` (`runAsNonRoot: true`, capabilities drop, seccomp profile).
-   - Exposes container port `8080`.
+### 3. Linting & Manifest Validation
 
-**Inspecting the local play deployment:**
-```sh
-# View running pods created by play kube
-podman pod ps
+Validate chart syntax and render Kubernetes manifests:
 
-# View container status within the pod
-podman ps --filter "pod=lab-service"
-
-# Verify service response
-curl http://localhost:8080
-
-# Check container logs within the pod
-podman logs -f lab-service-pod-lab-service
-```
-
-**Teardown:**
-```sh
-mise run play-d
-# or: podman play kube rendered.yaml --down
-```
-
----
-
-### Tier 3: Cluster Deployment & Testing on Kubernetes (`mise run helm-i`)
-
-The final phase validates the workload on a live Kubernetes cluster. This tests real-world Pod Security Admission (PSA) enforcement, network routing, and container startup under production constraints.
-
-#### 1. Cluster Prerequisites & Configuration
-
-Ensure your `kubectl` context points to your Kubernetes cluster:
-```sh
-kubectl config current-context
-```
-
-Verify that the target namespace enforces the `restricted` Pod Security Standard:
-```sh
-kubectl get ns default --show-labels
-# Should include:
-# pod-security.kubernetes.io/enforce=restricted
-# pod-security.kubernetes.io/enforce-version=latest
-```
-
-#### 2. Linting & Template Validation
-
-Run the linter and inspect the generated manifests before cluster deployment:
-```sh
+```bash
+# Lint the chart
 mise run helm-l
+# or: helm lint chart/
+
+# Render templates to rendered.yaml
 mise run helm-t
-
+# or: helm template test chart/ > rendered.yaml
 ```
 
-#### 3. Deploying to the Cluster
+### 4. Deploying to the Kubernetes Cluster
 
-Install the Helm chart release:
-```sh
+> [!IMPORTANT]
+> The `mise run helm-i` and `mise run helm-u` tasks are strictly for **development and testing** (they install/uninstall a release named `test` in your current default namespace). For an actual cluster installation, run `helm upgrade --install` directly with your desired release name and target namespace (or pull the published OCI chart from GHCR).
+
+#### Development & Testing (`mise`)
+
+```bash
 mise run helm-i
-# or: helm install test chart/
+# Runs: helm install test chart/
 ```
 
-#### 4. Verifying PSS Compliance & Health
+#### Actual Cluster Installation (`helm`)
 
-Check the pod status and verify that Kubernetes Pod Security Admission (PSA) allowed the pod to run:
+Install (or upgrade) the chart into a dedicated namespace (e.g., `traefik` or `gateway-system`) from the local `chart/` directory or published GHCR OCI artifact:
 
-```sh
-# Check pod deployment status
-kubectl get pods -l app=lab-service
+```bash
+# Install from local chart directory
+helm upgrade --install gateway-traefik chart/ \
+  --namespace traefik \
+  --create-namespace
 
-# Inspect pod details and events for security policy rejections
-kubectl describe pod -l app=lab-service
+# Or install directly from GHCR OCI registry
+helm upgrade --install gateway-traefik oci://ghcr.io/joeckr/charts/gateway-traefik \
+  --namespace traefik \
+  --create-namespace
 ```
 
-> [!TIP]
-> If your namespace enforces the `restricted` Pod Security Standard and there are non-compliant settings (such as missing `runAsNonRoot` or un-dropped capabilities), `kubectl describe pod` will show warning events from the `pod-security` admission controller.
+> [!NOTE]
+> When creating a new namespace on a cluster that enforces `restricted` Pod Security Admission at the namespace level, ensure the namespace is labeled accordingly:
+> ```bash
+> kubectl label namespace traefik \
+>   pod-security.kubernetes.io/enforce=restricted \
+>   pod-security.kubernetes.io/enforce-version=latest \
+>   --overwrite
+> ```
 
-Check the application logs:
-```sh
-kubectl logs -l app=lab-service -f
+### 5. Verifying Health, Gateway & Controller Status
+
+Verify that the GatewayClass, Gateway, and controller pods run cleanly (add `-n traefik` if installed into a dedicated namespace):
+
+```bash
+# Check pod status
+kubectl get pods -l app.kubernetes.io/name=traefik
+
+# Inspect pod events for any security policy rejections
+kubectl describe pod -l app.kubernetes.io/name=traefik
+
+# Verify GatewayClass and Gateway status (ACCEPTED & PROGRAMMED = True)
+kubectl get gatewayclass,gateway
+
+# Stream controller logs
+kubectl logs -l app.kubernetes.io/name=traefik -f
+
+# Verify the LoadBalancer service
+kubectl get svc -l app.kubernetes.io/name=traefik
 ```
 
-Verify service access via port-forwarding:
-```sh
-# Forward port 8080 from the cluster pod
-kubectl port-forward svc/lab-service 8080:8080
+### 6. Uninstalling from the Cluster
 
-# In a separate shell, test HTTP response
-curl http://localhost:8080
-```
+Clean up the deployed release (and optionally the Gateway API CRDs):
 
-#### 5. Uninstalling from the Cluster
-
-When testing is complete, clean up the release:
-```sh
+```bash
+# Development / test release teardown
 mise run helm-u
 # or: helm uninstall test
+
+# Actual cluster release teardown
+helm uninstall gateway-traefik --namespace traefik
+
+# Optional: Remove cluster-wide Gateway API CRDs
+mise run crds-u
 ```
 
 ---
@@ -290,16 +226,18 @@ Run tasks with `mise run <task>`:
 |---|---|---|
 | `install` | Install tools and set up git hooks | `hk install --mise` |
 | `hk` (or `check`) | Run all linters and hook checks | `hk check --all` |
-| `compose` | Start local container stack with Podman Compose | `podman compose up -d` |
+| `compose` | Start local Traefik container with Podman Compose | `podman compose up -d` |
 | `down` | Stop local Podman Compose stack | `podman compose down` |
 | `logs` | View Podman Compose logs | `podman compose logs -f` |
 | `play` | Test Helm chart manifests locally with Podman Play Kube | `podman play kube rendered.yaml --publish-all` |
 | `play-d` | Stop and remove Podman Play Kube pods | `podman play kube rendered.yaml --down` |
+| `crds-i` | Install Kubernetes Gateway API Standard CRDs | `kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.1/standard-install.yaml` |
+| `crds-u` | Uninstall Kubernetes Gateway API Standard CRDs | `kubectl delete -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.1/standard-install.yaml --ignore-not-found` |
 | `helm-d` | Build Helm chart dependencies | `helm dependency build chart/` |
 | `helm-l` | Lint Helm chart | `helm lint chart/` |
 | `helm-t` | Render Helm chart templates to `rendered.yaml` | `helm template test chart/ > rendered.yaml` |
-| `helm-i` | Install Helm chart to current Kubernetes cluster | `helm install test chart/` |
-| `helm-u` | Uninstall Helm chart release from cluster | `helm uninstall test` |
+| `helm-i` | Install `test` Helm release for local dev/testing | `helm install test chart/` |
+| `helm-u` | Uninstall `test` Helm release from cluster | `helm uninstall test` |
 | `trivy-fs` | Scan repository filesystem for security vulnerabilities | `trivy fs .` |
 
 ---
