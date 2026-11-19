@@ -2,8 +2,8 @@ apiVersion: v2
 name: gateway-traefik
 description: Helm wrapper chart overriding official Traefik Kubernetes Gateway API controller
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 dependencies:
   - name: traefik
     version: "42.0.0"
