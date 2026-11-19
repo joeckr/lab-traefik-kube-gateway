@@ -33,6 +33,12 @@ traefik:
     enabled: false
     isDefaultClass: false
 
+  ports:
+    web:
+      forwardedHeaders:
+        trustedIPs:
+          - "10.244.0.0/16"
+
   gateway:
     enabled: true
     listeners:
